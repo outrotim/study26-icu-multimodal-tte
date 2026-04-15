@@ -1,18 +1,21 @@
 # =====================================================================
-# Figure regeneration - Figures 2 and 3 from the manuscript
+# Figure regeneration — Figures 2, 3, and 4 from the manuscript
 #
 # Prerequisites:
 #   1. scripts/primary_analysis.R has been run and produced primary_results.rds
 #   2. Delirium subgroup and assessment-threshold results are available
 #      (these come from the full analytic pipeline; see Supplementary Methods)
+#   3. Schoenfeld residual objects from the primary Cox models are available
+#      (produced by the primary analysis script)
 #
 # This script reproduces:
 #   Figure 2: Primary mortality + VFD-28 + ICU LOS forest plot
-#   Figure 3: Delirium hazard by assessment adequacy + HR by ventilation status
+#   Figure 3: Delirium HR by CAM-ICU assessment adequacy (MIMIC-IV, post-hoc)
+#   Figure 4: Schoenfeld residual diagnostics for the primary mortality Cox
 # =====================================================================
 
 suppressPackageStartupMessages({
-  library(ggplot2); library(dplyr); library(patchwork); library(scales)
+  library(ggplot2); library(dplyr); library(patchwork); library(scales); library(survival)
 })
 
 STUDY_ROOT <- Sys.getenv("STUDY_ROOT", unset = ".")
@@ -34,7 +37,7 @@ thm <- theme_bw(base_size = 11) +
         legend.position = "none")
 
 # =====================================================================
-# Figure 2 - Primary mortality + unbiased secondary outcomes
+# Figure 2 — Primary mortality + unbiased secondary outcomes
 # =====================================================================
 fig2_df <- tibble::tribble(
   ~outcome, ~group, ~label, ~est, ~lo, ~hi, ~xtype, ~order,
@@ -98,10 +101,10 @@ fig2 <- p2a / p2b / p2c + plot_layout(heights = c(3.2, 2.2, 2.2))
 ggsave(file.path(FIG_DIR, "Figure2.png"), fig2, width = 9.5, height = 7.5, dpi = 300, bg = "white")
 
 # =====================================================================
-# Figure 3 - Ascertainment bias signature
+# Figure 3 — Delirium HR across assessment-adequacy thresholds (MIMIC-IV, post-hoc)
+# Single panel. Subgroup-by-ventilation analyses are in Supplementary Figure 7.
 # =====================================================================
-# Panel A: delirium HR by assessment threshold (MIMIC-IV, post-hoc)
-fig3a_df <- tibble::tribble(
+fig3_df <- tibble::tribble(
   ~threshold, ~N, ~HR, ~lo, ~hi,
   "All patients (full cohort)", 30924, 1.095, 1.076, 1.114,
   ">=3 total assessments", 21032, 1.060, 1.041, 1.080,
@@ -114,24 +117,7 @@ fig3a_df <- tibble::tribble(
   label = factor(label, levels = rev(label))
 )
 
-# Panel B: mortality + delirium by ventilation status (MIMIC + eICU)
-fig3b_df <- tibble::tribble(
-  ~outcome, ~db, ~stratum, ~est, ~lo, ~hi,
-  "Mortality HR",  "MIMIC-IV", "Ventilated (n=18,525)",     0.266, 0.213, 0.331,
-  "Mortality HR",  "MIMIC-IV", "Non-ventilated (n=12,399)", 0.517, 0.385, 0.693,
-  "Mortality HR",  "eICU-CRD", "Ventilated (n=14,101)",     0.451, 0.365, 0.559,
-  "Mortality HR",  "eICU-CRD", "Non-ventilated (n=20,522)", 0.637, 0.487, 0.833,
-  "Delirium HR",   "MIMIC-IV", "Ventilated",                1.082, 1.060, 1.104,
-  "Delirium HR",   "MIMIC-IV", "Non-ventilated",            1.143, 1.108, 1.180,
-  "Delirium HR",   "eICU-CRD", "Ventilated",                1.092, 1.025, 1.162,
-  "Delirium HR",   "eICU-CRD", "Non-ventilated",            1.064, 1.015, 1.114
-) |> mutate(
-  outcome = factor(outcome, levels = c("Mortality HR", "Delirium HR")),
-  stratum = factor(stratum, levels = rev(unique(stratum))),
-  color = ifelse(db == "MIMIC-IV", col_mimic, col_eicu)
-)
-
-p3a <- ggplot(fig3a_df, aes(x = HR, y = label)) +
+fig3 <- ggplot(fig3_df, aes(x = HR, y = label)) +
   geom_vline(xintercept = 1, linetype = "dashed", color = "grey40") +
   geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0,
                  linewidth = 1.2, color = col_mimic) +
@@ -141,25 +127,30 @@ p3a <- ggplot(fig3a_df, aes(x = HR, y = label)) +
   scale_x_log10(breaks = c(0.95, 1, 1.05, 1.1, 1.15),
                 limits = c(0.95, 1.35),
                 labels = label_number(accuracy = 0.01)) +
-  labs(title = "A. Delirium HR across assessment-adequacy thresholds (MIMIC-IV, post-hoc)",
+  labs(title = "Delirium HR across CAM-ICU assessment-adequacy thresholds (MIMIC-IV, post-hoc)",
        x = "Delirium hazard ratio (multimodal vs opioid-mono)",
        y = NULL) + thm
 
-p3b <- ggplot(fig3b_df, aes(x = est, y = stratum, color = color)) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "grey40") +
-  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0, linewidth = 1.2) +
-  geom_point(size = 3.5, shape = 18) +
-  geom_text(aes(x = hi, label = sprintf("  %.2f (%.2f, %.2f)", est, lo, hi)),
-            hjust = 0, size = 3.1, color = "black") +
-  scale_color_identity() +
-  scale_x_log10(breaks = c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.5),
-                limits = c(0.18, 2.0),
-                labels = label_number(accuracy = 0.01)) +
-  facet_wrap(~ outcome, ncol = 1, scales = "free_y") +
-  labs(title = "B. Hazard ratios stratified by ventilation status",
-       x = "Hazard ratio (95% CI)", y = NULL) + thm
+ggsave(file.path(FIG_DIR, "Figure3.png"), fig3, width = 9.5, height = 5, dpi = 300, bg = "white")
 
-fig3 <- p3a / p3b + plot_layout(heights = c(1.0, 1.5))
-ggsave(file.path(FIG_DIR, "Figure3.png"), fig3, width = 9.5, height = 10, dpi = 300, bg = "white")
+# =====================================================================
+# Figure 4 — Schoenfeld residual diagnostics for the primary mortality Cox
+# Requires the two Cox objects from the primary analysis (m_mimic, m_eicu).
+# In a standalone reproduction, rerun scripts/primary_analysis.R to populate
+# these in the session before sourcing this script.
+# =====================================================================
+if (exists("m_mimic") && exists("m_eicu")) {
+  par(mfrow = c(1, 2))
+  png(file.path(FIG_DIR, "Figure4_Schoenfeld.png"),
+      width = 9.5, height = 4.5, units = "in", res = 300, bg = "white")
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 2.5, 1))
+  plot(cox.zph(m_mimic), var = 1, main = "MIMIC-IV (p = 0.001)", col = col_mimic)
+  abline(h = 0, lty = 2, col = "grey40")
+  plot(cox.zph(m_eicu),  var = 1, main = "eICU-CRD (p = 0.052)", col = col_eicu)
+  abline(h = 0, lty = 2, col = "grey40")
+  dev.off()
+} else {
+  message("Skipping Figure 4: run scripts/primary_analysis.R first so that m_mimic and m_eicu Cox objects are in the workspace.")
+}
 
-cat("Figures 2 and 3 regenerated\n")
+cat("Figures 2, 3, and 4 regenerated (Figure 4 requires primary Cox objects in workspace)\n")
